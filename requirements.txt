@@ -1,0 +1,10 @@
+streamlit
+requests
+langchain
+langchain-openai
+openai
+pandas
+python-dateutil
+PyPDF2
+faiss-cpu
+tiktoken
