@@ -1,0 +1,46 @@
+# ---- Core ----
+python-dotenv
+requests
+tiktoken
+numpy
+
+# ---- Streamlit UI ----
+streamlit
+python-docx
+
+# ---- FastAPI Backend ----
+fastapi
+uvicorn[standard]
+python-multipart
+
+# ---- LangChain + AI ----
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langchain-groq
+openai
+groq
+
+# ---- Vector DB ----
+chromadb
+
+# ---- PDF Processing ----
+PyPDF2
+
+# ---- Pydantic v1 compatibility ----
+pydantic
+pydantic-core
+typing-extensions
+
+#----- docs-----
+python-docx
+
+#----OCR------
+sentence-transformers
+poppler 
+tesseract
+
+#---vector store-------
+chromadb
+urllib3<2

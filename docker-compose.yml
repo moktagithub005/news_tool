@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: unisole-api:local
+    container_name: news_tool-api-1
+    ports:
+      - "8000:8000"
+    environment:
+      - API_KEY=unisole-test-key
+      - NEWSAPI_KEY=${NEWSAPI_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./data:/app/data
+    networks:
+      - newsnet
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: streamlit/Dockerfile
+    image: unisole-streamlit:local
+    container_name: news_tool-streamlit-1
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE_URL=http://api:8000       # 👈 key fix: use Docker service name instead of localhost
+      - NEWSAPI_KEY=${NEWSAPI_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - api
+    networks:
+      - newsnet
+
+networks:
+  newsnet:
+    driver: bridge
