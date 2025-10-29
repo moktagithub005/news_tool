@@ -1,21 +1,24 @@
 services:
   - type: web
-    name: unisole-upsc-ai-api
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements_api.txt
-    startCommand: uvicorn api.main:app --host 0.0.0.0 --port 10000
+    name: unisole-api
+    env: docker
+    dockerfilePath: ./api/Dockerfile
+    autoDeploy: true
     envVars:
       - key: API_KEY
-        sync: false   # set in dashboard
-      - key: GROQ_API_KEY
+        value: unisole-test-key
+      - key: NEWSAPI_KEY
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      - key: CORS_ORIGINS
-        value: "*"
-      # If you want persistent disk for /data:
-    disk:
-      name: data
-      mountPath: /app/data
-      sizeGB: 1
+
+  - type: web
+    name: unisole-streamlit
+    env: docker
+    dockerfilePath: ./streamlit/Dockerfile
+    autoDeploy: true
+    envVars:
+      - key: API_BASE_URL
+        value: https://unisole-api.onrender.com
+      - key: API_KEY
+        value: unisole-test-key
