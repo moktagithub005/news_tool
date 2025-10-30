@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r /app/requirements_streamlit.txt
 COPY . /app
 
 ENV PYTHONUNBUFFERED=1
-ENV API_BASE_URL="https://unisole-api.onrender.com"  # default; override in Render
+ENV API_BASE_URL="https://unisole-api.onrender.com"  
 EXPOSE 8501
 
 # launch streamlit from repo root (app.py is at root)
