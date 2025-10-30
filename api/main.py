@@ -5,6 +5,11 @@ from fastapi.security.api_key import APIKeyHeader
 from fastapi.openapi.utils import get_openapi
 from dotenv import load_dotenv
 import os
+# add these imports near top of file
+from fastapi import FastAPI
+from starlette.responses import RedirectResponse
+
+
 
 # ✅ Load .env variables
 load_dotenv()
@@ -22,6 +27,9 @@ app = FastAPI(
     version="1.0.0",
     description="Backend API for UPSC AI News Platform",
 )
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    return RedirectResponse(url="/docs")
 
 # ✅ CORS for frontend access
 app.add_middleware(
