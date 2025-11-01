@@ -134,7 +134,7 @@ def extract_pdf_text_bytes(file_bytes: bytes, enable_ocr: bool = False) -> Tuple
         text = page.get_text("text")
         
         # Skip pages with very little text (likely just images/ads)
-        if len(text.strip()) < 2000:  # Less than 2000 chars = probably just an ad
+        if len(text.strip()) < 50:  # Less than 50 chars = probably just an ad
             pages.append("")
             continue
         
