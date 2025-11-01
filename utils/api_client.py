@@ -1,99 +1,119 @@
 # utils/api_client.py
+"""
+Simple API client used by the Streamlit frontend to talk to the FastAPI backend.
+
+Behavior:
+- Reads API_BASE_URL and API_KEY from environment (supports Render/containers)
+- Sends header "x-api-key" (lowercase) which matches FastAPI's check
+- Supports GET, POST (json / files / form-data) and DELETE
+- Normalizes responses into dict: {"count": int, "items": list, "raw": <raw payload>}
+- Optional DEBUG via env var DEBUG_API_CLIENT=1
+"""
+
 import os
 import requests
-from typing import Optional, Dict, Any, List
-from dotenv import load_dotenv
+from typing import Dict, Any, Optional
 
-load_dotenv()
+# load env from .env when running locally (safe noop in container)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+except Exception:
+    # dotenv may not be present in minimal containers — that's fine
+    pass
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://unisole-api.onrender.com")
-
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 API_KEY = os.getenv("API_KEY", "")
+DEBUG = os.getenv("DEBUG_API_CLIENT", "") not in ("", "0", "false", "False")
 
-if not API_KEY:
-    raise ValueError("API_KEY not found! Please set in .env")
+def _debug(*args, **kwargs):
+    if DEBUG:
+        print("[api_client DEBUG]", *args, **kwargs)
 
-HEADERS = {"X-API-Key": API_KEY}
+# Build default headers (do NOT raise if API_KEY missing — allow server to handle auth)
+DEFAULT_HEADERS: Dict[str, str] = {}
+if API_KEY:
+    DEFAULT_HEADERS["x-api-key"] = API_KEY
 
-def get(path: str, params: Dict = None):
-    url = f"{API_BASE_URL}{path}"
-    response = requests.get(url, headers=HEADERS, params=params)
-    return _handle_response(response)
-
-def post(path: str, json: Dict = None, files: Dict = None, data: Dict = None):
-    """
-    Helper to POST to API and *normalize* the response into a dict:
-    { "count": int, "items": list, "raw": <original json> }
-
-    - Uses API_BASE_URL env var (falls back to http://api:8000)
-    - Sends x-api-key header from env var API_KEY (fallback: unisole-test-key)
-    - Supports JSON posts, file uploads and form-data
-    """
-    import os
-    import requests
-    from requests.exceptions import RequestException
-
-    # Build URL
-    base = os.getenv("API_BASE_URL", "http://api:8000").rstrip("/")
-    if path.startswith("/"):
-        url = f"{base}{path}"
-    else:
-        url = f"{base}/{path}"
-
-    # Headers (API key + content-type for json)
-    headers = {}
-    api_key = os.getenv("API_KEY")
-    if api_key:
-        headers["x-api-key"] = api_key
-
-    try:
-        if json is not None:
-            headers["Content-Type"] = "application/json"
-            resp = requests.post(url, json=json, headers=headers, timeout=30)
-        elif files:
-            # multipart upload
-            resp = requests.post(url, files=files, data=data or {}, headers=headers, timeout=120)
-        else:
-            resp = requests.post(url, data=data or {}, headers=headers, timeout=30)
-
-        resp.raise_for_status()
-    except RequestException as e:
-        # Return normalized error structure so UI doesn't crash
-        return {"count": 0, "items": [], "error": str(e), "raw": None}
-
-    # Try parse JSON and normalize keys
+def _normalize_payload(resp: requests.Response) -> Dict[str, Any]:
+    """Return normalized dict with keys: count, items, raw"""
     try:
         payload = resp.json()
     except ValueError:
-        # not JSON
         return {"count": 0, "items": [], "error": "Invalid JSON from API", "raw_text": resp.text}
 
-    # payload may be dict or list; prefer dict
     if isinstance(payload, dict):
         items = payload.get("items") or payload.get("results") or payload.get("articles") or []
-        count = payload.get("count", len(items))
-        # defensive: ensure items is a list
+        # defensive: coerce non-list to list
         if not isinstance(items, list):
-            # if API returned single item or tuple, coerce
             try:
                 items = list(items)
             except Exception:
                 items = [items]
+        count = payload.get("count", len(items))
         return {"count": int(count or 0), "items": items, "raw": payload}
+    elif isinstance(payload, list):
+        return {"count": len(payload), "items": payload, "raw": payload}
     else:
-        # Unexpected shape (e.g., list), return it as items
-        if isinstance(payload, list):
-            return {"count": len(payload), "items": payload, "raw": payload}
         return {"count": 0, "items": [], "raw": payload}
 
+def _full_url(path: str) -> str:
+    path = path.lstrip("/")
+    return f"{API_BASE_URL}/{path}"
 
-def delete(path: str):
-    url = f"{API_BASE_URL}{path}"
-    response = requests.delete(url, headers=HEADERS)
-    return _handle_response(response)
+def get(path: str, params: Optional[Dict] = None, headers: Optional[Dict] = None, timeout: int = 30):
+    url = _full_url(path)
+    hdr = {**DEFAULT_HEADERS, **(headers or {})}
+    _debug("GET", url, "params=", params, "headers=", hdr)
+    try:
+        resp = requests.get(url, headers=hdr, params=params, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        _debug("GET error:", e)
+        return {"count": 0, "items": [], "error": str(e), "raw": None}
+    return _normalize_payload(resp)
 
-def _handle_response(response):
-    if response.status_code in (200, 201):
-        return response.json() if "application/json" in str(response.headers) else response.content
-    else:
-        raise Exception(f"API Error {response.status_code}: {response.text}")
+def post(path: str, json: Optional[Dict] = None, files: Optional[Dict] = None, data: Optional[Dict] = None, headers: Optional[Dict] = None, timeout: int = 60):
+    """
+    POST helper:
+      - json => sends application/json
+      - files => multipart/form-data with files (use {"file": open(..., "rb")})
+      - data => form fields for multipart or x-www-form-urlencoded posts
+    """
+    url = _full_url(path)
+    hdr = {**DEFAULT_HEADERS, **(headers or {})}
+    _debug("POST", url, "json_present=", json is not None, "files_present=", files is not None, "hdr=", hdr)
+
+    try:
+        if json is not None:
+            hdr["Content-Type"] = "application/json"
+            resp = requests.post(url, headers=hdr, json=json, timeout=timeout)
+        elif files is not None:
+            # requests will set multipart content-type automatically
+            resp = requests.post(url, headers=hdr, files=files, data=data or {}, timeout=timeout)
+        else:
+            # form-encoded
+            resp = requests.post(url, headers=hdr, data=data or {}, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        _debug("POST error:", e, "response_text:", getattr(e, "response", None) and e.response.text)
+        return {"count": 0, "items": [], "error": str(e), "raw": None}
+
+    return _normalize_payload(resp)
+
+def delete(path: str, headers: Optional[Dict] = None, timeout: int = 30):
+    url = _full_url(path)
+    hdr = {**DEFAULT_HEADERS, **(headers or {})}
+    _debug("DELETE", url, "hdr=", hdr)
+    try:
+        resp = requests.delete(url, headers=hdr, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        _debug("DELETE error:", e)
+        return {"ok": False, "error": str(e), "raw": None}
+
+    # try JSON else raw
+    try:
+        return resp.json()
+    except ValueError:
+        return {"ok": True, "raw": resp.text}
