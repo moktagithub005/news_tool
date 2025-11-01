@@ -40,8 +40,16 @@ async def analyze_pdf(
         if not raw_bytes:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-        # 1) Extract text (fast and robust using PyMuPDF)
-        text, pages, page_count = extract_pdf_text_bytes(raw_bytes)
+       # 1) Extract text (fast and robust using PyMuPDF)
+        extraction_result = extract_pdf_text_bytes(raw_bytes)
+
+        # Ensure we unpack the tuple correctly
+        if isinstance(extraction_result, tuple):
+            text, pages, page_count = extraction_result
+        else:
+            text = extraction_result
+            pages = []
+            page_count = 1
 
         # 2) Split into UPSC-relevant sections
         sections = split_into_sections(text)
