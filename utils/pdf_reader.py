@@ -109,10 +109,9 @@ SECTION_KEYWORDS = {
 # merge unknown keywords to general if nothing matches
 DEFAULT_SECTION = "general"
 
-
 def extract_pdf_text_bytes(file_bytes: bytes, enable_ocr: bool = False) -> Tuple[str, List[str], int]:
     """
-    Extract text from PDF bytes using PyMuPDF.
+    Extract text from PDF bytes using PyMuPDF (images are automatically ignored).
     Returns (full_text, list_of_page_texts, page_count).
     
     Args:
@@ -127,26 +126,24 @@ def extract_pdf_text_bytes(file_bytes: bytes, enable_ocr: bool = False) -> Tuple
     pages = []
     pieces = []
     
+    # OPTIMIZATION: Process only text, skip image-heavy pages
     for pno in range(len(doc)):
         page = doc.load_page(pno)
+        
+        # Extract text only (images are ignored by default)
         text = page.get_text("text")
         
+        # Skip pages with very little text (likely just images/ads)
+        if len(text.strip()) < 2000:  # Less than 2000 chars = probably just an ad
+            pages.append("")
+            continue
+        
+        # If no text found, try blocks method
         if not text or text.strip() == "":
-            # fallback: try extract blocks and join
             blocks = page.get_text("blocks")
             text = "\n".join([b[4] for b in blocks if b and len(b) > 4])
         
-        # If still no text and OCR enabled, try OCR
-        if (not text or text.strip() == "") and enable_ocr:
-            try:
-                pix = page.get_pixmap()
-                import pytesseract
-                from PIL import Image
-                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                text = pytesseract.image_to_string(img)
-            except Exception:
-                pass
-        
+        # Skip OCR for news PDFs (too slow, not needed)
         text = text or ""
         pages.append(text)
         pieces.append(text)
