@@ -316,6 +316,14 @@ def summarize_sections(full_text: str) -> Dict[str, Dict]:
       }
     Uses LLM if available; otherwise TF-IDF fallback summary and light extraction heuristics.
     """
+    # SAFETY CHECK: Ensure full_text is a string, not a tuple
+    if isinstance(full_text, tuple):
+        # If it's a tuple from extract_pdf_text_bytes, get the first element
+        full_text = full_text[0] if full_text else ""
+    
+    if not isinstance(full_text, str):
+        full_text = str(full_text)
+    
     sections = split_into_sections(full_text)
     out = {}
     for sec_name, sec_text in sections.items():
@@ -358,6 +366,7 @@ def summarize_sections(full_text: str) -> Dict[str, Dict]:
             "interview_questions": questions
         }
     return out
+       
 
 
 # --- top-level processing ----------------------------------------------------
