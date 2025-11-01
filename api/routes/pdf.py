@@ -40,7 +40,7 @@ async def analyze_pdf(
         if not raw_bytes:
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
-       # 1) Extract text (fast and robust using PyMuPDF)
+        # 1) Extract text (fast and robust using PyMuPDF)
         extraction_result = extract_pdf_text_bytes(raw_bytes)
 
         # Ensure we unpack the tuple correctly
@@ -57,8 +57,6 @@ async def analyze_pdf(
         # 3) Prepare LLM
         llm = get_llm(model_name=os.getenv("GROQ_MODEL", None), mode=mode)
 
-        # 4) Summarize sections using LLM
-        #    For "fast" mode we will summarize only top N chars per section, for "deep" we allow more.
         # 4) Summarize sections - summarize_sections expects the full text string
         try:
             # Pass the full extracted text to summarize_sections
@@ -75,6 +73,12 @@ async def analyze_pdf(
             # Get the summary from summarize_sections output
             summary_data = all_summaries.get(cat, {})
             llm_summary = summary_data.get("summary", "No summary available")
+            
+            # Limit content snippet based on mode
+            if mode == "fast":
+                content_snippet = content[:2000]
+            else:
+                content_snippet = content[:4000]
 
             # 5) Score relevance (uses your relevance scoring util)
             try:
@@ -83,7 +87,7 @@ async def analyze_pdf(
                 score = 0
 
             summarized_sections[cat] = {
-                "raw_text_snippet": prompt_text[:2000],
+                "raw_text_snippet": content_snippet,
                 "llm_summary": llm_summary,
                 "relevance_score": float(score)
             }
@@ -100,7 +104,7 @@ async def analyze_pdf(
 
         response = {
             "ok": True,
-            "page_count": page_count,  # heuristic
+            "page_count": page_count,
             "sections": summarized_sections,
             "ranked_sections": ranked,
             "raw_characters_extracted": len(text)
