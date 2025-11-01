@@ -59,25 +59,22 @@ async def analyze_pdf(
 
         # 4) Summarize sections using LLM
         #    For "fast" mode we will summarize only top N chars per section, for "deep" we allow more.
+        # 4) Summarize sections - summarize_sections expects the full text string
+        try:
+            # Pass the full extracted text to summarize_sections
+            all_summaries = summarize_sections(text)
+        except Exception as e:
+            print(f"[ERROR] Summarization failed: {str(e)}")
+            all_summaries = {}
+
         summarized_sections = {}
         for cat, content in sections.items():
             if not content or not content.strip():
                 continue
-
-            # Limit input size based on mode
-            if mode == "fast":
-                prompt_text = content[:4000]  # shorter
-            else:
-                prompt_text = content[:15000]  # deeper reading but still capped
-
-            # Use summarizer wrapper in pdf_reader.py
-            try:
-                # summarize_sections_groq expects a dict; call with single-section dict for clarity
-                res = summarize_sections({cat: prompt_text}, llm)
-                # summarize_sections_groq returns a dict cat -> string (raw LLM output)
-                llm_summary = res.get(cat, "").strip()
-            except Exception as e:
-                llm_summary = f"LLM summarization error: {str(e)}"
+            
+            # Get the summary from summarize_sections output
+            summary_data = all_summaries.get(cat, {})
+            llm_summary = summary_data.get("summary", "No summary available")
 
             # 5) Score relevance (uses your relevance scoring util)
             try:
