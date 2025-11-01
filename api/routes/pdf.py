@@ -41,7 +41,7 @@ async def analyze_pdf(
             raise HTTPException(status_code=400, detail="Empty file uploaded")
 
         # 1) Extract text (fast and robust using PyMuPDF)
-        text = extract_pdf_text_bytes(raw_bytes)
+        text, pages, page_count = extract_pdf_text_bytes(raw_bytes)
 
         # 2) Split into UPSC-relevant sections
         sections = split_into_sections(text)
@@ -95,7 +95,7 @@ async def analyze_pdf(
 
         response = {
             "ok": True,
-            "page_count_estimate": len(text) // 3000,  # heuristic
+            "page_count": page_count,  # heuristic
             "sections": summarized_sections,
             "ranked_sections": ranked,
             "raw_characters_extracted": len(text)
