@@ -20,3 +20,7 @@ python-multipart
 PyMuPDF
 python-multipart
 python-dotenv
+pytesseract
+pdf2image
+Pillow
+

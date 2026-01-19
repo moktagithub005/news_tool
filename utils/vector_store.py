@@ -7,6 +7,9 @@ Functions:
 - documents_from_articles(articles) -> List[Document]
 - get_vectorstore(documents, collection_name='default', persist_directory=..., embeddings_provider='openai')
 - load_vectorstore(collection_name='default', persist_directory=...)
+- add_documents(vectorstore, documents) -> int
+- delete_collection(collection_name, persist_directory=...)
+- list_collections(persist_directory=...)
 """
 
 import os
@@ -206,10 +209,21 @@ def get_vectorstore(
         try:
             # Prefer from_documents if available
             if hasattr(CHROMA_CLASS, "from_documents"):
-                vs = CHROMA_CLASS.from_documents(documents, embedding=emb, persist_directory=persist_directory, collection_name=collection_name, **chroma_kwargs)
+                vs = CHROMA_CLASS.from_documents(
+                    documents, 
+                    embedding=emb, 
+                    persist_directory=persist_directory, 
+                    collection_name=collection_name, 
+                    **chroma_kwargs
+                )
             else:
                 # older wrappers sometimes require different arg order
-                vs = CHROMA_CLASS(persist_directory=persist_directory, collection_name=collection_name, embedding_function=emb, **chroma_kwargs)
+                vs = CHROMA_CLASS(
+                    persist_directory=persist_directory, 
+                    collection_name=collection_name, 
+                    embedding_function=emb, 
+                    **chroma_kwargs
+                )
                 vs.add_documents(documents)
         except Exception as e:
             # helpful error
@@ -220,16 +234,137 @@ def get_vectorstore(
     try:
         if hasattr(CHROMA_CLASS, "from_documents"):
             # load without docs by instantiating; some implementations accept persist_directory+collection_name
-            vs = CHROMA_CLASS(persist_directory=persist_directory, collection_name=collection_name, embedding=emb, **chroma_kwargs)
+            vs = CHROMA_CLASS(
+                persist_directory=persist_directory, 
+                collection_name=collection_name, 
+                embedding=emb, 
+                **chroma_kwargs
+            )
         else:
-            vs = CHROMA_CLASS(persist_directory=persist_directory, collection_name=collection_name, embedding_function=emb, **chroma_kwargs)
+            vs = CHROMA_CLASS(
+                persist_directory=persist_directory, 
+                collection_name=collection_name, 
+                embedding_function=emb, 
+                **chroma_kwargs
+            )
         return vs
     except Exception as e:
         raise RuntimeError(f"Could not load vectorstore for collection '{collection_name}': {e}")
 
 
-def load_vectorstore(collection_name: str = "default", persist_directory: Optional[str] = None, embeddings_provider: str = "openai", **kwargs) -> Any:
+def load_vectorstore(
+    collection_name: str = "default", 
+    persist_directory: Optional[str] = None, 
+    embeddings_provider: str = "openai", 
+    **kwargs
+) -> Any:
     """
     Load existing vectorstore (wrapper for get_vectorstore with no docs).
     """
-    return get_vectorstore(documents=None, collection_name=collection_name, persist_directory=persist_directory, embeddings_provider=embeddings_provider, **kwargs)
+    return get_vectorstore(
+        documents=None, 
+        collection_name=collection_name, 
+        persist_directory=persist_directory, 
+        embeddings_provider=embeddings_provider, 
+        **kwargs
+    )
+
+
+def add_documents(vectorstore: Any, documents: List[Document]) -> int:
+    """
+    Add documents to an existing vectorstore.
+    
+    Args:
+        vectorstore: An existing Chroma vectorstore instance
+        documents: List of Document objects to add
+        
+    Returns:
+        Number of documents added
+    """
+    if not documents:
+        return 0
+    
+    try:
+        # Most vectorstore implementations have add_documents method
+        if hasattr(vectorstore, 'add_documents'):
+            vectorstore.add_documents(documents)
+            return len(documents)
+        else:
+            raise AttributeError("Vectorstore does not have add_documents method")
+    except Exception as e:
+        raise RuntimeError(f"Failed to add documents to vectorstore: {e}")
+
+
+def delete_collection(collection_name: str, persist_directory: Optional[str] = None) -> bool:
+    """
+    Delete a collection from the vector store.
+    
+    Args:
+        collection_name: Name of the collection to delete
+        persist_directory: Directory where vectorstore is persisted
+        
+    Returns:
+        True if deleted successfully, False otherwise
+    """
+    persist_directory = persist_directory or DEFAULT_PERSIST_DIR
+    collection_path = os.path.join(persist_directory, collection_name)
+    
+    try:
+        if os.path.exists(collection_path):
+            import shutil
+            shutil.rmtree(collection_path)
+            return True
+        return False
+    except Exception as e:
+        raise RuntimeError(f"Failed to delete collection '{collection_name}': {e}")
+
+
+def list_collections(persist_directory: Optional[str] = None) -> List[str]:
+    """
+    List all available collections in the vector store.
+    
+    Args:
+        persist_directory: Directory where vectorstore is persisted
+        
+    Returns:
+        List of collection names
+    """
+    persist_directory = persist_directory or DEFAULT_PERSIST_DIR
+    
+    try:
+        if not os.path.exists(persist_directory):
+            return []
+        
+        # List subdirectories (each is typically a collection)
+        collections = [
+            name for name in os.listdir(persist_directory)
+            if os.path.isdir(os.path.join(persist_directory, name))
+        ]
+        return collections
+    except Exception as e:
+        raise RuntimeError(f"Failed to list collections: {e}")
+
+
+def get_collection_stats(vectorstore: Any) -> Dict[str, Any]:
+    """
+    Get statistics about a collection.
+    
+    Args:
+        vectorstore: An existing Chroma vectorstore instance
+        
+    Returns:
+        Dictionary with collection statistics
+    """
+    try:
+        stats = {}
+        
+        # Try to get document count
+        if hasattr(vectorstore, '_collection'):
+            collection = vectorstore._collection
+            if hasattr(collection, 'count'):
+                stats['document_count'] = collection.count()
+        
+        # Add more stats as needed
+        return stats
+    except Exception as e:
+        return {"error": str(e)}

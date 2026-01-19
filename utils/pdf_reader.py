@@ -1,422 +1,356 @@
-# utils/pdf_reader.py
 """
-PDF extraction + UPSC-focused sectioning + summarization.
-
-Primary strategy:
-- Use PyMuPDF (fitz) to extract text quickly from each page.
-- Minimal OCR fallback can be added later (pytesseract) if pages are scanned images.
-- Clean junk (short lines, repeated bullets, ASCII garbage).
-- Split into sections using simple keyword-based mapping to UPSC categories.
-- Summarize each section using:
-    1) Provided LLM (via utils.llm.get_llm) if available, otherwise
-    2) TF-IDF sentence scoring fallback (fast, local).
+Enhanced PDF Reader with conditional OCR.
+- Uses fitz (PyMuPDF) or PyPDF2 for text extraction
+- Falls back to OCR (pdf2image + pytesseract) if text < 100 chars total
+- Excludes image-only pages and junk text
+- Splits into UPSC-ready sections
 """
 
-from __future__ import annotations
-import re
-import os
+from typing import List, Dict, Any
 import io
-import math
-import statistics
-from typing import List, Dict, Tuple, Optional
-import fitz  # PyMuPDF
+import os
+import logging
+import re
+import warnings
 
-# optional imports (safe fallbacks)
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-except Exception:
-    TfidfVectorizer = None
-
-# try to import LLM helper if present in project
-try:
-    from utils.llm import get_llm
-except Exception:
-    get_llm = None
+logger = logging.getLogger(__name__)
 
 try:
-    from utils.config import UPSC_CATEGORIES
-except Exception:
-    UPSC_CATEGORIES = ["polity", "economy", "international", "environment", 
-                       "science_tech", "social", "security", "geography"]
+    import fitz  # PyMuPDF
+    HAS_FITZ = True
+except ImportError:
+    HAS_FITZ = False
 
-# optional OCR fallback
-def ocr_page_image_fallback(path: str, dpi: int = 200) -> List[str]:
-    """
-    Convert PDF pages to images and run pytesseract OCR.
-    Requires: pdf2image, pytesseract, poppler installed in system.
-    Returns list of page texts.
-    """
-    try:
-        from pdf2image import convert_from_path
-        import pytesseract
-    except Exception:
-        return []
+try:
+    from PyPDF2 import PdfReader
+    HAS_PYPDF2 = True
+except ImportError:
+    HAS_PYPDF2 = False
 
-    pages_text = []
-    try:
-        images = convert_from_path(path, dpi=dpi)
-        for img in images:
-            txt = pytesseract.image_to_string(img, lang=os.getenv("OCR_LANG", "eng"))
-            pages_text.append(txt)
-    except Exception:
-        return []
-    return pages_text
+try:
+    from pdf2image import convert_from_bytes
+    import pytesseract
+    from PIL import Image
+    # Increase the decompression bomb limit for large PDFs
+    Image.MAX_IMAGE_PIXELS = None  # Disable limit entirely
+    # Or set a higher limit: Image.MAX_IMAGE_PIXELS = 200000000
+    HAS_OCR = True
+except ImportError:
+    HAS_OCR = False
 
 
-# --- helpers -----------------------------------------------------------------
+# ---------- Helper functions ----------
 
-MIN_SENT_LEN = 30
-MAX_SENT_LEN = 800
-
-JUNK_RE = re.compile(r"^[\W_]{1,}$")
-MULTI_WHITESPACE = re.compile(r"\s{2,}")
-
-SECTION_KEYWORDS = {
-    "polity": [
-        "parliament", "constitution", "supreme court", "high court", "cabinet",
-        "lok sabha", "rajya sabha", "governance", "policy", "bill", "act", "ordinance"
-    ],
-    "economy": [
-        "economy", "gdp", "reserve bank", "rbi", "inflation", "budget",
-        "fiscal", "monetary", "trade", "tariff", "exports", "imports", "economic"
-    ],
-    "international": [
-        "foreign", "treaty", "bilateral", "united nations", "us", "china", "diplomatic",
-        "sanction", "embargo", "international", "neighbour", "visakhapatnam", "google"
-    ],
-    "environment": [
-        "environment", "climate", "pollution", "biodiversity", "wildlife", "conservation",
-        "forest", "rainfall", "glacier", "sea level", "coastal", "emission"
-    ],
-    "science_tech": [
-        "space", "isro", "scientist", "research", "technology", "ai", "artificial intelligence",
-        "satellite", "experiment", "innovation", "robot", "data centre"
-    ],
-    "social": [
-        "education", "health", "welfare", "poverty", "caste", "minority", "women", "child",
-        "nutrition", "social", "scheme"
-    ],
-    "security": [
-        "defence", "army", "navy", "air force", "terror", "naxal", "border", "cyber security",
-        "intelligence", "safety"
-    ],
-    "geography": [
-        "river", "mountain", "plateau", "delta", "coast", "soil", "agriculture", "monsoon",
-        "geography", "terrain"
-    ]
-}
-
-# merge unknown keywords to general if nothing matches
-DEFAULT_SECTION = "general"
-
-def extract_pdf_text_bytes(file_bytes: bytes, enable_ocr: bool = False) -> Tuple[str, List[str], int]:
-    """
-    Extract text from PDF bytes using PyMuPDF (images are automatically ignored).
-    Returns (full_text, list_of_page_texts, page_count).
-    
-    Args:
-        file_bytes: PDF file as bytes
-        enable_ocr: If True, attempt OCR on failed pages (requires pytesseract)
-    
-    Returns:
-        Tuple of (full_text, page_texts_list, page_count)
-    """
-    # Open PDF from bytes
-    doc = fitz.open(stream=file_bytes, filetype="pdf")
-    pages = []
-    pieces = []
-    
-    # OPTIMIZATION: Process only text, skip image-heavy pages
-    for pno in range(len(doc)):
-        page = doc.load_page(pno)
-        
-        # Extract text only (images are ignored by default)
-        text = page.get_text("text")
-        
-        # Skip pages with very little text (likely just images/ads)
-        if len(text.strip()) < 50:  # Less than 50 chars = probably just an ad
-            pages.append("")
-            continue
-        
-        # If no text found, try blocks method
-        if not text or text.strip() == "":
-            blocks = page.get_text("blocks")
-            text = "\n".join([b[4] for b in blocks if b and len(b) > 4])
-        
-        # Skip OCR for news PDFs (too slow, not needed)
-        text = text or ""
-        pages.append(text)
-        pieces.append(text)
-    
-    full = "\n\n".join(pieces)
-    page_count = len(doc)
-    doc.close()
-    
-    return full, pages, page_count
-
-
-def clean_text(text: str) -> str:
-    """
-    Clean junk:
-      - remove very short/garbled lines
-      - collapse multi-whitespace
-      - fix dangling bullets
-    """
-    lines = []
-    for raw in text.splitlines():
-        s = raw.strip()
-        if not s:
-            continue
-        # remove lines that are only punctuation or single characters repeated
-        if JUNK_RE.match(s):
-            continue
-        # drop extremely short noisy lines (but keep if look like valid token)
-        if len(s) < MIN_SENT_LEN:
-            # allow short headlines with letters + spaces (like "India rises")
-            if re.match(r"^[A-Za-z0-9][A-Za-z0-9\s:\-,'()\.]{5,}$", s):
-                pass
-            else:
-                continue
-        # normalize whitespace
-        s = MULTI_WHITESPACE.sub(" ", s)
-        # remove trailing bullets/garbage
-        s = re.sub(r"^[\u2022•\-\*]+\s*", "", s)
-        lines.append(s)
-    return "\n".join(lines)
+def _normalize_text(text: str) -> str:
+    """Clean and normalize extracted text."""
+    if not text:
+        return ""
+    text = text.replace("\x00", "").replace("\r", " ").strip()
+    return " ".join(text.split())
 
 
 def sentence_tokenize(text: str) -> List[str]:
     """
-    Lightweight sentence splitter based on punctuation.
+    Simple sentence tokenizer using regex.
+    Splits on periods, exclamation marks, and question marks followed by whitespace.
     """
-    # split on sentence ends but keep abbreviations naive handling
-    s = re.split(r'(?<=[\.\?\n!])\s+(?=[A-Z0-9])', text)
-    out = []
-    for seg in s:
-        seg = seg.strip()
-        if not seg:
-            continue
-        if len(seg) > MAX_SENT_LEN:
-            # further split long segments by comma / semicolon
-            parts = re.split(r'(?<=[,;])\s+', seg)
-            out.extend([p.strip() for p in parts if p.strip()])
-        else:
-            out.append(seg)
-    return out
+    if not text:
+        return []
+    
+    # Split on sentence-ending punctuation followed by space or end of string
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    # Clean up and filter out empty sentences
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    return sentences
 
 
-def section_for_sentence(sent: str) -> str:
-    text = sent.lower()
-    scores = {}
-    for sec, keys in SECTION_KEYWORDS.items():
-        for k in keys:
-            if k in text:
-                scores[sec] = scores.get(sec, 0) + 1
-    if not scores:
-        return DEFAULT_SECTION
-    # return best scoring section
-    best = max(scores.items(), key=lambda x: x[1])[0]
-    return best
-
-
-def split_into_sections(full_text: str) -> Dict[str, str]:
+def tfidf_summarize(text: str, num_sentences: int = 5) -> str:
     """
-    Heuristic: sentence-level tagging into sections. Then join into section texts.
+    Simple TF-IDF based summarization.
+    Extracts the most important sentences based on word frequency.
     """
-    cleaned = clean_text(full_text)
-    sentences = sentence_tokenize(cleaned)
-    buckets: Dict[str, List[str]] = {}
-    for s in sentences:
-        sec = section_for_sentence(s)
-        buckets.setdefault(sec, []).append(s)
-    # ensure all UPSC_CATEGORIES exist as keys
-    for cat in UPSC_CATEGORIES + [DEFAULT_SECTION]:
-        buckets.setdefault(cat, [])
-    # join
-    return {k: "\n".join(v) for k, v in buckets.items() if v}
-
-
-# --- summarizers -------------------------------------------------------------
-
-def tfidf_summarize(text: str, max_sentences: int = 6) -> str:
-    """
-    Fallback fast summarizer using TF-IDF sentence scoring.
-    """
-    if not TfidfVectorizer:
-        # very dumb fallback
-        sents = sentence_tokenize(text)[:max_sentences]
-        return "\n".join(sents)
-    sents = sentence_tokenize(text)
-    if not sents:
+    if not text or not text.strip():
         return ""
-    vec = TfidfVectorizer(stop_words="english", norm="l2")
-    try:
-        X = vec.fit_transform(sents)
-    except Exception:
-        # some tokenization issue, return first N sentences
-        return "\n".join(sents[:max_sentences])
-    # score by sum of tfidf per sentence
-    scores = X.sum(axis=1).A1
-    ranked_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-    # pick top `max_sentences` in original order for readability
-    top = sorted(ranked_idx[:max_sentences])
-    summary = "\n".join([sents[i] for i in top])
+    
+    sentences = sentence_tokenize(text)
+    
+    if len(sentences) <= num_sentences:
+        return text
+    
+    # Calculate word frequencies (simple TF)
+    words = re.findall(r'\b\w+\b', text.lower())
+    word_freq = {}
+    for word in words:
+        if len(word) > 3:  # Ignore very short words
+            word_freq[word] = word_freq.get(word, 0) + 1
+    
+    # Score each sentence based on word frequencies
+    sentence_scores = {}
+    for i, sentence in enumerate(sentences):
+        sentence_words = re.findall(r'\b\w+\b', sentence.lower())
+        score = sum(word_freq.get(word, 0) for word in sentence_words if len(word) > 3)
+        if score > 0:
+            sentence_scores[i] = score / len(sentence_words)  # Normalize by length
+    
+    # Get top sentences
+    top_indices = sorted(sentence_scores, key=sentence_scores.get, reverse=True)[:num_sentences]
+    top_indices.sort()  # Maintain original order
+    
+    summary = " ".join(sentences[i] for i in top_indices)
     return summary
 
 
-def llm_summarize(section_text: str, section_name: str, mode: str = "upsc") -> Optional[str]:
-    """
-    Use project LLM if available. This is optional — function returns None if LLM not found.
-    The LLM should accept a prompt and return a short structured summary.
-    """
-    if get_llm is None:
-        return None
-    try:
-        llm = get_llm(mode="deep")
-        prompt = (
-            f"Create UPSC-style concise notes for the section '{section_name}'.\n"
-            "Instructions:\n"
-            "- Provide a short summary (2-4 sentences),\n"
-            "- List 3-6 prelims pointers (short bullets),\n"
-            "- Suggest 2 mains angles (one-liners),\n"
-            "- Provide 2 interview/discussion questions.\n\n"
-            "Section text:\n" + section_text[:12000]
-        )
-        # We call a generic `generate` or `chat` method if present.
-        # The actual implementation/method name may vary per your utils.llm; we attempt common methods.
-        if hasattr(llm, "generate"):
-            out = llm.generate(prompt)
-            # out may be an object — try to extract text
-            if isinstance(out, str):
-                return out
-            if hasattr(out, "generations"):
-                # langchain-style
-                try:
-                    return out.generations[0][0].text
-                except Exception:
-                    return str(out)
-        if hasattr(llm, "call"):
-            return llm.call(prompt)
-        if hasattr(llm, "chat"):
-            return llm.chat(prompt)
-    except Exception:
-        return None
-    return None
+# ---------- Extraction Methods ----------
+
+def extract_with_fitz(pdf_bytes: bytes) -> str:
+    """Extract text with PyMuPDF."""
+    if not HAS_FITZ:
+        raise RuntimeError("PyMuPDF not installed")
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    pages = []
+    for page in doc:
+        txt = page.get_text("text") or ""
+        pages.append(_normalize_text(txt))
+    doc.close()
+    return "\n".join(pages)
 
 
-def summarize_sections(full_text: str) -> Dict[str, Dict]:
+def extract_with_pypdf2(pdf_bytes: bytes) -> str:
+    """Extract text with PyPDF2."""
+    if not HAS_PYPDF2:
+        raise RuntimeError("PyPDF2 not installed")
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    texts = []
+    for page in reader.pages:
+        t = page.extract_text() or ""
+        texts.append(_normalize_text(t))
+    return "\n".join(texts)
+
+
+def extract_with_ocr(pdf_bytes: bytes, dpi: int = 200) -> str:
+    """OCR fallback: Convert PDF pages to images and run Tesseract OCR."""
+    if not HAS_OCR:
+        raise RuntimeError("OCR dependencies not installed (pdf2image, pytesseract, Pillow)")
+    pages = convert_from_bytes(pdf_bytes, dpi=dpi)
+    texts = []
+    for idx, img in enumerate(pages):
+        try:
+            text = pytesseract.image_to_string(img, lang="eng")
+            text = _normalize_text(text)
+            if len(text) > 100:  # ignore junk or blank OCR
+                texts.append(text)
+        except Exception as e:
+            logger.warning(f"OCR failed on page {idx}: {e}")
+    return "\n".join(texts)
+
+
+# ---------- Unified entry point ----------
+
+def extract_pdf_text_bytes(pdf_bytes, enable_ocr: bool = True):
     """
-    Return dict:
-      { section_name: {
-          "summary": "...",
-          "prelims_points": [...],
-          "mains_angles": [...],
-          "interview_questions": [...]
-        }
-      }
-    Uses LLM if available; otherwise TF-IDF fallback summary and light extraction heuristics.
+    Main entry: extract text; fallback to OCR if too short.
+    Accepts: bytes, bytearray, file path (str), file-like object, or already-extracted text
+    Returns: (raw_text, num_pages, method_used)
     """
-    # SAFETY CHECK: Ensure full_text is a string, not a tuple
-    if isinstance(full_text, tuple):
-        # If it's a tuple from extract_pdf_text_bytes, get the first element
-        full_text = full_text[0] if full_text else ""
+    # Normalize input to bytes
+    if isinstance(pdf_bytes, str):
+        # Check if it's already extracted text (contains actual content, not a file path)
+        # File paths are usually short and don't contain special characters like Hindi text
+        if len(pdf_bytes) > 200 or (len(pdf_bytes) > 50 and not pdf_bytes.endswith('.pdf')):
+            # This looks like already-extracted text, not a file path
+            logger.info("Input appears to be already-extracted text, returning as-is")
+            # Estimate pages (rough guess: 3000 chars per page)
+            estimated_pages = max(1, len(pdf_bytes) // 3000)
+            return pdf_bytes, estimated_pages, "pre-extracted"
+        
+        # It's a file path
+        import os
+        if os.path.exists(pdf_bytes):
+            with open(pdf_bytes, 'rb') as f:
+                pdf_bytes = f.read()
+        else:
+            # Last check: maybe it's short extracted text that looks like a path
+            logger.warning(f"String input is not a valid file path, treating as extracted text")
+            estimated_pages = max(1, len(pdf_bytes) // 3000)
+            return pdf_bytes, estimated_pages, "pre-extracted"
+            
+    elif isinstance(pdf_bytes, bytearray):
+        pdf_bytes = bytes(pdf_bytes)
+    elif hasattr(pdf_bytes, 'read'):
+        # File-like object
+        content = pdf_bytes.read()
+        if isinstance(content, str):
+            # File object returned string (already extracted text)
+            estimated_pages = max(1, len(content) // 3000)
+            return content, estimated_pages, "pre-extracted"
+        pdf_bytes = bytes(content) if isinstance(content, bytearray) else content
+    elif not isinstance(pdf_bytes, bytes):
+        raise TypeError(f"Expected bytes, str (filepath), or file-like object, got {type(pdf_bytes)}")
     
-    if not isinstance(full_text, str):
-        full_text = str(full_text)
+    text = ""
+    num_pages = 0
+    method = "none"
+
+    # 1. Try fitz first (best)
+    if HAS_FITZ:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            num_pages = len(doc)
+            pages = []
+            for page in doc:
+                txt = page.get_text("text") or ""
+                pages.append(_normalize_text(txt))
+            doc.close()
+            text = "\n".join(pages)
+            method = "fitz"
+        except Exception as e:
+            logger.warning(f"fitz failed: {e}")
+
+    # 2. Fallback to PyPDF2
+    if not text or len(text.strip()) < 100:
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            num_pages = len(reader.pages)
+            texts = []
+            for page in reader.pages:
+                t = page.extract_text() or ""
+                texts.append(_normalize_text(t))
+            text = "\n".join(texts)
+            method = "pypdf2"
+        except Exception as e:
+            logger.warning(f"PyPDF2 failed: {e}")
+
+    # 3. OCR fallback (only if text is too short and OCR is enabled)
+    if enable_ocr and len(text.strip()) < 100 and HAS_OCR:
+        logger.info("Text content too short — running OCR fallback...")
+        try:
+            # Suppress PIL decompression bomb warnings for large PDFs
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
+                pages = convert_from_bytes(pdf_bytes, dpi=200)
+                num_pages = len(pages)
+                texts = []
+                for idx, img in enumerate(pages):
+                    try:
+                        ocr_text = pytesseract.image_to_string(img, lang="eng")
+                        ocr_text = _normalize_text(ocr_text)
+                        if len(ocr_text) > 100:
+                            texts.append(ocr_text)
+                    except Exception as e:
+                        logger.warning(f"OCR failed on page {idx}: {e}")
+                text = "\n".join(texts)
+                method = "ocr"
+        except Exception as e:
+            logger.error(f"OCR failed: {e}")
+
+    return text, num_pages, method
+
+
+# ---------- Section splitting ----------
+
+def validate_sections(sections: Any) -> List[Dict[str, Any]]:
+    """Ensure sections is a list of dicts, not a single dict or other type."""
+    if not sections:
+        return []
     
-    sections = split_into_sections(full_text)
-    out = {}
-    for sec_name, sec_text in sections.items():
-        if not sec_text.strip():
+    # If it's a single dict, wrap it in a list
+    if isinstance(sections, dict):
+        return [sections]
+    
+    # If it's a list, ensure each item is a dict
+    if isinstance(sections, list):
+        validated = []
+        for item in sections:
+            if isinstance(item, dict):
+                validated.append(item)
+            elif isinstance(item, str):
+                # Convert string to dict format
+                validated.append({"title": "", "text": item, "index": len(validated)})
+        return validated
+    
+    return []
+
+
+def split_into_sections(raw_text: str, min_chars: int = 100) -> List[Dict[str, Any]]:
+    """Split into sections and remove junk under 100 chars."""
+    if not raw_text or not raw_text.strip():
+        return []
+
+    # Split roughly by 2–3K characters
+    chunk_size = 3000
+    overlap = 200
+    text = raw_text.strip()
+    sections = []
+
+    start = 0
+    idx = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunk = text[start:end].strip()
+        if len(chunk) >= min_chars:
+            sections.append({
+                "title": f"Section {idx + 1}",
+                "text": chunk,
+                "index": idx
+            })
+            idx += 1
+        start = end - overlap
+
+    # If no sections were created, create at least one
+    if not sections and len(text) >= min_chars:
+        sections.append({
+            "title": "Section 1",
+            "text": text,
+            "index": 0
+        })
+
+    return sections
+
+
+def summarize_sections_groq(sections, mode: str = "deep"):
+    """
+    Dummy summarizer (replace with LLM call later).
+    Handles both list of dicts and single dict inputs.
+    """
+    # Validate and normalize input
+    if not sections:
+        return []
+    
+    # Handle case where sections is a single dict
+    if isinstance(sections, dict):
+        sections = [sections]
+    
+    # Handle case where sections is not iterable
+    if not isinstance(sections, (list, tuple)):
+        logger.error(f"Invalid sections type: {type(sections)}")
+        return []
+    
+    output = []
+    for idx, s in enumerate(sections):
+        # Skip non-dict items
+        if not isinstance(s, dict):
+            logger.warning(f"Section {idx} is not a dict (type: {type(s)}), skipping")
             continue
-        # try LLM
-        llm_out = llm_summarize(sec_text, sec_name)
-        if llm_out:
-            # LLM may return a plain string — store under summary key
-            out[sec_name] = {
-                "summary": llm_out.strip(),
-                "prelims_points": [],
-                "mains_angles": [],
-                "interview_questions": []
-            }
+        
+        # Extract text safely
+        txt = s.get("text", "")
+        if not txt:
+            logger.warning(f"Section {idx} has no text, skipping")
             continue
-        # fallback
-        summary = tfidf_summarize(sec_text, max_sentences=5)
-        # prelist: extract important noun phrases (naive: top sentences split)
-        prelims = []
-        mains = []
-        questions = []
-        # heuristics: first sentences often headline-like
-        sents = sentence_tokenize(sec_text)
-        for i, s in enumerate(sents[:8]):
-            if len(prelims) < 4 and len(s) < 160:
-                prelims.append(s if len(s) < 200 else s[:200] + "...")
-        # mains: choose top tfidf sentences if available
-        mains_text = tfidf_summarize(sec_text, max_sentences=3)
-        if mains_text:
-            mains = [m.strip() for m in mains_text.splitlines() if m.strip()]
-        # questions: turn top mains into questions
-        for m in mains[:2]:
-            q = f"What are the implications of '{m}' for India's policy and society?"
-            questions.append(q)
-        out[sec_name] = {
+            
+        title = s.get("title", f"Section {idx + 1}")
+        
+        # Create summary
+        summary = txt[:300] + "..." if len(txt) > 300 else txt
+        
+        output.append({
+            "title": title,
             "summary": summary,
-            "prelims_points": prelims,
-            "mains_angles": mains,
-            "interview_questions": questions
-        }
-    return out
-       
-
-
-# --- top-level processing ----------------------------------------------------
-
-def analyze_pdf_file(path: str) -> Dict:
-    """
-    Full pipeline: extract -> clean -> split -> summarize -> return structured notes.
-    """
-    with open(path, 'rb') as f:
-        file_bytes = f.read()
+            "text": txt,  # Keep original text
+            "length": len(txt),
+            "index": s.get("index", idx)
+        })
     
-    full_text, pages, page_count = extract_pdf_text_bytes(file_bytes)
-    cleaned = clean_text(full_text)
-    sections_summary = summarize_sections(cleaned)
-    
-    # build a ranked list of sections by amount of content (proxy for importance)
-    ranked = sorted(
-        sections_summary.items(),
-        key=lambda kv: (len(kv[1].get("summary", "")), len(kv[1].get("prelims_points", []))),
-        reverse=True
-    )
-    return {
-        "path": path,
-        "char_count": len(full_text),
-        "page_count": page_count,
-        "sections": {k: v for k, v in sections_summary.items()},
-        "ranked_sections": [name for name, _ in ranked]
-    }
-
-
-# Convenience for streamlit/backend call
-def analyze_pdf_bytes(file_bytes: bytes, target_path: Optional[str] = None) -> Dict:
-    """
-    Analyze PDF from bytes directly.
-    """
-    full_text, pages, page_count = extract_pdf_text_bytes(file_bytes)
-    cleaned = clean_text(full_text)
-    sections_summary = summarize_sections(cleaned)
-    
-    # build a ranked list of sections by amount of content (proxy for importance)
-    ranked = sorted(
-        sections_summary.items(),
-        key=lambda kv: (len(kv[1].get("summary", "")), len(kv[1].get("prelims_points", []))),
-        reverse=True
-    )
-    
-    return {
-        "path": target_path or "uploaded_pdf",
-        "char_count": len(full_text),
-        "page_count": page_count,
-        "sections": {k: v for k, v in sections_summary.items()},
-        "ranked_sections": [name for name, _ in ranked]
-    }
+    return output

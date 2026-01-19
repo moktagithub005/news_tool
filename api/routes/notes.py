@@ -47,3 +47,43 @@ def delete_day(date: str, _: bool = Depends(verify_api_key)):
         _save(data)
         return {"ok": True, "message": f"Deleted all notes for {date}"}
     raise HTTPException(status_code=404, detail="Date not found")
+@router.post("/delete_one")
+def delete_one_note(payload: dict, _: bool = Depends(verify_api_key)):
+    """
+    payload = {
+      "date": "YYYY-MM-DD",
+      "title": "...",   # optional but recommended
+      "url": "..."      # optional but recommended
+    }
+    Match priority: title+url > title only > url only.
+    """
+    date = payload.get("date")
+    if not date:
+        raise HTTPException(status_code=400, detail="date required")
+
+    data = _load()
+    items = data.get(date, [])
+    if not items:
+        raise HTTPException(status_code=404, detail="No notes for this date")
+
+    title = payload.get("title")
+    url = payload.get("url")
+
+    def keep(x):
+        # remove if both match; else try title/url match
+        if title and url:
+            return not (x.get("title") == title and x.get("url") == url)
+        if title:
+            return x.get("title") != title
+        if url:
+            return x.get("url") != url
+        return True  # nothing to remove
+
+    new_items = [x for x in items if keep(x)]
+    if len(new_items) == len(items):
+        raise HTTPException(status_code=404, detail="Note not found with given keys")
+
+    data[date] = new_items
+    _save(data)
+    return {"ok": True, "message": "Note deleted"}
+

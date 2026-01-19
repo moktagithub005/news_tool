@@ -4,13 +4,18 @@ PDF → UPSC Notes Analyzer (robust)
 - Splits long text into chunks and analyzes per-chunk
 - Merges & dedupes items
 - Handles JSON wrapped in code fences
+- Now uses pdf_reader.py for extraction
 """
 
 from typing import Dict, List, Tuple
 import json, re
+import io, os
 from langchain_core.messages import SystemMessage, HumanMessage
 from utils.llm import get_llm
 from utils.config import UPSC_CATEGORIES
+
+# Import from our unified pdf_reader module
+from utils.pdf_reader import extract_pdf_text_bytes
 
 JSON_SCHEMA_EXAMPLE = {
   "items": [
@@ -125,7 +130,7 @@ def analyze_pdf_text(full_text: str, language: str = "Both",
 
 def to_markdown(notes_by_cat: Dict[str, List[Dict]], date_str: str, paper_name: str = "") -> str:
     lines = []
-    header = f"# UPSC Notes — {date_str} {('— ' + paper_name) if paper_name else ''}\n"
+    header = f"# UPSC Notes – {date_str} {('– ' + paper_name) if paper_name else ''}\n"
     lines.append(header)
     for cat, items in notes_by_cat.items():
         if not items: continue
@@ -161,3 +166,46 @@ Points:
 {seed}
 """
     return llm.invoke(prompt).content
+
+def load_pdf_text(source, enable_ocr: bool = True) -> str:
+    """
+    Robustly accept:
+      - bytes / bytearray
+      - filepath (str) -> opened as bytes
+      - file-like object (has .read())
+      - plain text string (returned as-is)
+
+    Uses the unified pdf_reader.extract_pdf_text_bytes() for consistency.
+    Returns only the text (not num_pages or method).
+    """
+    # If it's already a string and looks like text (not a filepath), return it
+    if isinstance(source, str):
+        if os.path.exists(source):
+            # It's a file path - read it
+            with open(source, "rb") as fh:
+                source = fh.read()
+        else:
+            # Assume it's already extracted text
+            return source
+    
+    # Convert file-like objects to bytes
+    if hasattr(source, "read"):
+        content = source.read()
+        if isinstance(content, str):
+            # Already text
+            return content
+        source = bytes(content) if isinstance(content, bytearray) else content
+    
+    # Convert bytearray to bytes
+    if isinstance(source, bytearray):
+        source = bytes(source)
+    
+    # Now use the unified extraction function
+    try:
+        text, num_pages, method = extract_pdf_text_bytes(source, enable_ocr=enable_ocr)
+        return text
+    except Exception as e:
+        raise ValueError(
+            f"Failed to extract text from PDF: {e}. "
+            "Ensure input is bytes or a valid filepath."
+        )

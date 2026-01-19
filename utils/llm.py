@@ -39,7 +39,7 @@ def get_llm(model_name: Optional[str] = None, provider: Optional[str] = None, te
     # Groq provider
     if provider_env == "groq" and ChatGroq is not None:
         api_key = os.getenv("GROQ_API_KEY")
-        model = model_name or os.getenv("GROQ_MODEL", "mixtral-8x7b")
+        model = model_name or os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
         # ChatGroq constructor args differ by library version — adapt if needed
         try:
             return ChatGroq(api_key=api_key, model=model, temperature=temperature)
