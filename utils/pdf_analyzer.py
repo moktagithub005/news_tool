@@ -10,7 +10,33 @@ PDF → UPSC Notes Analyzer (robust)
 from typing import Dict, List, Tuple
 import json, re
 import io, os
-from langchain_core.messages import SystemMessage, HumanMessage
+
+# Try multiple import locations for LangChain message types using dynamic import so static analyzers
+# don't error when langchain isn't installed; fallback to tiny local stubs.
+import importlib
+SystemMessage = None
+HumanMessage = None
+# Candidate modules to try (ordered)
+for mod_name in ("langchain_core.messages", "langchain.messages", "langchain.schema", "langchain_core.schema"):
+    try:
+        mod = importlib.import_module(mod_name)
+        SystemMessage = getattr(mod, "SystemMessage", getattr(mod, "System", None))
+        HumanMessage = getattr(mod, "HumanMessage", getattr(mod, "Human", None))
+        if SystemMessage and HumanMessage:
+            break
+    except Exception:
+        continue
+
+# Minimal fallback so the analyzer can run without langchain installed in the runtime.
+if SystemMessage is None or HumanMessage is None:
+    class SystemMessage:
+        def __init__(self, content: str):
+            self.content = content
+
+    class HumanMessage:
+        def __init__(self, content: str):
+            self.content = content
+
 from utils.llm import get_llm
 from utils.config import UPSC_CATEGORIES
 
