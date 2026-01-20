@@ -21,3 +21,4 @@ sentence-transformers
 python-multipart
 pymupdf
 pillow
+langchain-groq>=0.0.1
