@@ -7,7 +7,6 @@ without Streamlit dependency or version issues.
 
 import os
 import logging
-import importlib
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -16,37 +15,17 @@ logger = logging.getLogger(__name__)
 
 # Try to import Groq Chat; fall back to OpenAI if not available
 try:
-    import importlib
-    module = importlib.import_module("langchain_groq")
-    ChatGroq = getattr(module, "ChatGroq", None)
-    if ChatGroq:
-        logger.info("✅ ChatGroq imported successfully")
-    else:
-        logger.warning("❌ langchain_groq imported but ChatGroq attribute not found")
+    from langchain_groq import ChatGroq
+    logger.info("✅ ChatGroq imported successfully")
 except Exception as e:
     logger.warning(f"❌ Failed to import ChatGroq: {e}")
     ChatGroq = None
+
 try:
-    # Try known module paths for ChatOpenAI to avoid unresolved-import errors in editors
-    ChatOpenAI = None
-    try:
-        module = importlib.import_module("langchain_openai")
-        ChatOpenAI = getattr(module, "ChatOpenAI", None)
-        if ChatOpenAI:
-            logger.info("✅ ChatOpenAI imported successfully from langchain_openai")
-    except Exception:
-        # Fallback to langchain.chat_models (common in newer langchain versions)
-        try:
-            module = importlib.import_module("langchain.chat_models")
-            ChatOpenAI = getattr(module, "ChatOpenAI", None)
-            if ChatOpenAI:
-                logger.info("✅ ChatOpenAI imported successfully from langchain.chat_models")
-        except Exception as e:
-            logger.warning(f"❌ Failed to import ChatOpenAI from known modules: {e}")
-            ChatOpenAI = None
+    from langchain_openai import ChatOpenAI
+    logger.info("✅ ChatOpenAI imported successfully")
 except Exception as e:
-    logger.warning(f"❌ Unexpected error while resolving ChatOpenAI: {e}")
-    ChatOpenAI = None
+    logger.warning(f"❌ Failed to import ChatOpenAI: {e}")
     ChatOpenAI = None
 
 
@@ -65,31 +44,80 @@ def get_llm(model_name: Optional[str] = None, provider: Optional[str] = None, te
     logger.info(f"GROQ_API_KEY available: {bool(groq_key)}")
     logger.info(f"OPENAI_API_KEY available: {bool(openai_key)}")
     
-    # Decide provider
+    # Decide provider - PRIORITIZE OPENAI IN CLOUD
     provider_env = (provider or os.getenv("LLM_PROVIDER") or "").lower()
     logger.info(f"Provider preference: {provider_env or 'auto-detect'}")
 
     if not provider_env:
-        if groq_key:
+        # Auto-detect: Try OpenAI first (more reliable in cloud), then Groq
+        if openai_key and ChatOpenAI is not None:
+            provider_env = "openai"
+            logger.info("Auto-detected: Using OpenAI (cloud-friendly)")
+        elif groq_key and ChatGroq is not None:
             provider_env = "groq"
             logger.info("Auto-detected: Using Groq")
         elif openai_key:
             provider_env = "openai"
-            logger.info("Auto-detected: Using OpenAI")
+            logger.info("Auto-detected: Using OpenAI (Groq not available)")
+        elif groq_key:
+            provider_env = "groq"
+            logger.info("Auto-detected: Using Groq (OpenAI not available)")
 
-    # Groq provider
+    # Try OpenAI first (more reliable)
+    if provider_env == "openai" or (provider_env == "groq" and ChatGroq is None and openai_key):
+        if not openai_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY not found in environment variables."
+            )
+        
+        if ChatOpenAI is None:
+            raise RuntimeError(
+                "ChatOpenAI not available. Please ensure langchain-openai is installed."
+            )
+        
+        model = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        logger.info(f"Creating ChatOpenAI with model: {model}")
+        
+        try:
+            llm = ChatOpenAI(
+                temperature=temperature,
+                openai_api_key=openai_key,
+                model=model
+            )
+            logger.info("✅ ChatOpenAI created successfully")
+            return llm
+        except Exception as e:
+            logger.error(f"❌ Failed to create ChatOpenAI: {e}")
+            # If OpenAI fails and we have Groq, try it
+            if groq_key and ChatGroq is not None:
+                logger.info("Falling back to Groq...")
+                provider_env = "groq"
+            else:
+                raise RuntimeError(f"Failed to initialize ChatOpenAI: {e}")
+
+    # Groq provider (fallback)
     if provider_env == "groq":
         if not groq_key:
             raise RuntimeError(
-                "GROQ_API_KEY not found in environment variables. "
-                "Please set it in your Render.com dashboard under Environment Variables."
+                "GROQ_API_KEY not found in environment variables."
             )
         
         if ChatGroq is None:
-            raise RuntimeError(
-                "ChatGroq not available. Please ensure langchain-groq is installed. "
-                "Check requirements.txt includes: langchain-groq>=0.0.1"
-            )
+            # If ChatGroq not available but we have OpenAI, use it instead
+            if openai_key and ChatOpenAI is not None:
+                logger.warning("ChatGroq not available, falling back to OpenAI")
+                model = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+                llm = ChatOpenAI(
+                    temperature=temperature,
+                    openai_api_key=openai_key,
+                    model=model
+                )
+                logger.info("✅ ChatOpenAI created successfully (fallback)")
+                return llm
+            else:
+                raise RuntimeError(
+                    "ChatGroq not available. Please ensure langchain-groq is installed."
+                )
         
         model = model_name or os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
         logger.info(f"Creating ChatGroq with model: {model}")
@@ -106,41 +134,9 @@ def get_llm(model_name: Optional[str] = None, provider: Optional[str] = None, te
             logger.error(f"❌ Failed to create ChatGroq: {e}")
             raise RuntimeError(f"Failed to initialize ChatGroq: {e}")
 
-    # OpenAI fallback
-    if provider_env == "openai" or provider_env == "":
-        if not openai_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY not found in environment variables. "
-                "Please set either GROQ_API_KEY or OPENAI_API_KEY in Render.com dashboard."
-            )
-        
-        if ChatOpenAI is None:
-            raise RuntimeError(
-                "ChatOpenAI not available. Please ensure langchain-openai is installed. "
-                "Add to requirements.txt: langchain-openai>=0.0.5"
-            )
-        
-        model = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        logger.info(f"Creating ChatOpenAI with model: {model}")
-        
-        try:
-            llm = ChatOpenAI(
-                temperature=temperature,
-                openai_api_key=openai_key,
-                model=model
-            )
-            logger.info("✅ ChatOpenAI created successfully")
-            return llm
-        except Exception as e:
-            logger.error(f"❌ Failed to create ChatOpenAI: {e}")
-            raise RuntimeError(f"Failed to initialize ChatOpenAI: {e}")
-
     # If no provider available, raise helpful error
     error_msg = (
         "No supported LLM provider found.\n\n"
-        "Available options:\n"
-        "1. Set GROQ_API_KEY in Render.com Environment Variables\n"
-        "2. Set OPENAI_API_KEY in Render.com Environment Variables\n\n"
         f"Current status:\n"
         f"- GROQ_API_KEY: {'✅ Found' if groq_key else '❌ Not found'}\n"
         f"- OPENAI_API_KEY: {'✅ Found' if openai_key else '❌ Not found'}\n"
