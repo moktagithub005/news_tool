@@ -11,6 +11,10 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
 
   - type: web
     name: unisole-streamlit
@@ -22,3 +26,13 @@ services:
         value: https://unisole-api.onrender.com
       - key: API_KEY
         value: unisole-test-key
+      - key: NEWSAPI_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: LANGCHAIN_TRACING_V2
+        value: "false"
