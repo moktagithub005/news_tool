@@ -16,26 +16,57 @@ import warnings
 logger = logging.getLogger(__name__)
 
 try:
-    import fitz  # PyMuPDF
+    import importlib
+    fitz = importlib.import_module("fitz")  # PyMuPDF
     HAS_FITZ = True
-except ImportError:
+except Exception:
+    # fitz (PyMuPDF) is optional; set flag and leave fitz as None
+    fitz = None
     HAS_FITZ = False
 
+# Import PyPDF2 (or pypdf) dynamically to avoid static import resolution errors
 try:
-    from PyPDF2 import PdfReader
-    HAS_PYPDF2 = True
-except ImportError:
+    import importlib
+    pypdf_mod = None
+    PdfReader = None
+    try:
+        pypdf_mod = importlib.import_module("PyPDF2")
+    except Exception:
+        try:
+            # newer distributions may provide the package as "pypdf"
+            pypdf_mod = importlib.import_module("pypdf")
+        except Exception:
+            pypdf_mod = None
+
+    if pypdf_mod is not None:
+        # Prefer PdfReader; fall back to legacy name if present
+        PdfReader = getattr(pypdf_mod, "PdfReader", None) or getattr(pypdf_mod, "PdfFileReader", None)
+        HAS_PYPDF2 = PdfReader is not None
+    else:
+        HAS_PYPDF2 = False
+except Exception:
     HAS_PYPDF2 = False
 
+# Dynamically import OCR-related libraries to avoid static import resolution errors
+convert_from_bytes = None
+pytesseract = None
+Image = None
 try:
-    from pdf2image import convert_from_bytes
-    import pytesseract
-    from PIL import Image
-    # Increase the decompression bomb limit for large PDFs
-    Image.MAX_IMAGE_PIXELS = None  # Disable limit entirely
-    # Or set a higher limit: Image.MAX_IMAGE_PIXELS = 200000000
-    HAS_OCR = True
-except ImportError:
+    import importlib
+    # pdf2image: convert PDF pages to images
+    pdf2image_mod = importlib.import_module("pdf2image")
+    convert_from_bytes = getattr(pdf2image_mod, "convert_from_bytes", None)
+    # pytesseract: OCR engine
+    pytesseract = importlib.import_module("pytesseract")
+    # PIL Image module
+    Image = importlib.import_module("PIL.Image")
+    # Increase the decompression bomb limit for large PDFs if available
+    try:
+        Image.MAX_IMAGE_PIXELS = None  # Disable limit entirely
+    except Exception:
+        pass
+    HAS_OCR = convert_from_bytes is not None and pytesseract is not None and Image is not None
+except Exception:
     HAS_OCR = False
 
 

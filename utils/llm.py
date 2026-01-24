@@ -8,24 +8,35 @@ without Streamlit dependency or version issues.
 import os
 import logging
 from functools import lru_cache
+import importlib
 from typing import Any, Optional
 
 # Set up logging
 logger = logging.getLogger(__name__)
-
 # Try to import Groq Chat; fall back to OpenAI if not available
+ChatGroq = None
 try:
-    from langchain_groq import ChatGroq
-    logger.info("✅ ChatGroq imported successfully")
+    _groq_mod = importlib.import_module("langchain_groq")
+    ChatGroq = getattr(_groq_mod, "ChatGroq", None)
+    if ChatGroq is not None:
+        logger.info("✅ ChatGroq imported successfully")
+    else:
+        logger.warning("❌ 'ChatGroq' attribute not found in langchain_groq")
 except Exception as e:
-    logger.warning(f"❌ Failed to import ChatGroq: {e}")
+    logger.warning(f"❌ Failed to import langchain_groq: {e}")
+    ChatGroq = None
     ChatGroq = None
 
+ChatOpenAI = None
 try:
-    from langchain_openai import ChatOpenAI
-    logger.info("✅ ChatOpenAI imported successfully")
+    _openai_mod = importlib.import_module("langchain_openai")
+    ChatOpenAI = getattr(_openai_mod, "ChatOpenAI", None)
+    if ChatOpenAI is not None:
+        logger.info("✅ ChatOpenAI imported successfully")
+    else:
+        logger.warning("❌ 'ChatOpenAI' attribute not found in langchain_openai")
 except Exception as e:
-    logger.warning(f"❌ Failed to import ChatOpenAI: {e}")
+    logger.warning(f"❌ Failed to import langchain_openai: {e}")
     ChatOpenAI = None
 
 

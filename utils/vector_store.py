@@ -18,36 +18,39 @@ from typing import List, Optional, Any, Dict
 # ---------------------------
 # Compat import: Document
 # ---------------------------
-try:
-    # older langchain
-    from langchain.schema import Document
-except Exception:
+import importlib
+
+Document = None
+# Try multiple candidate module paths via importlib to avoid static-analysis unresolved-import errors
+for _mod in ("langchain.schema", "langchain_core.schema", "langchain_core.documents"):
     try:
-        # new split package
-        from langchain_core.schema import Document
+        mod = importlib.import_module(_mod)
+        Document = getattr(mod, "Document")
+        break
     except Exception:
-        # last fallback (some versions put Document in documents)
-        try:
-            from langchain_core.documents import Document
-        except Exception:
-            raise ImportError(
-                "Could not import Document from langchain.schema or langchain_core.schema.\n"
-                "Please install a compatible langchain/langchain-core version or adjust imports."
-            )
+        Document = None
+
+if Document is None:
+    raise ImportError(
+        "Could not import Document from langchain.schema or langchain_core.schema.\n"
+        "Please install a compatible langchain/langchain-core version or adjust imports."
+    )
 
 # ---------------------------
 # Try to import Chroma (langchain-community or langchain-chroma)
 # ---------------------------
 CHROMA_CLASS = None
-try:
-    # preferred import used in many integrations
-    from langchain_community.vectorstores import Chroma as _Chroma
-    CHROMA_CLASS = _Chroma
-except Exception:
+# Try multiple candidate module paths via importlib to avoid static-analysis unresolved-import errors
+for _mod in (
+    "langchain_community.vectorstores",
+    "langchain.vectorstores",
+    "langchain_community.vectorstores.chroma",
+    "langchain.chroma",
+):
     try:
-        # alternative: direct chromadb usage via langchain integration
-        from langchain.vectorstores import Chroma as _Chroma  # older langchain
-        CHROMA_CLASS = _Chroma
+        mod = importlib.import_module(_mod)
+        CHROMA_CLASS = getattr(mod, "Chroma")
+        break
     except Exception:
         CHROMA_CLASS = None
 
@@ -55,14 +58,17 @@ except Exception:
 # Try to import OpenAIEmbeddings (or fallback)
 # ---------------------------
 EMBEDDINGS_CLASS = None
-try:
-    from langchain.embeddings import OpenAIEmbeddings as _OpenAIEmbeddings
-    EMBEDDINGS_CLASS = _OpenAIEmbeddings
-except Exception:
+# Use importlib to avoid static-analysis unresolved-import errors
+for _mod in (
+    "langchain.embeddings",
+    "langchain.embeddings.openai",
+    "langchain_core.embeddings",
+    "langchain_core.embeddings.openai",
+):
     try:
-        # some installs provide it under this path
-        from langchain.embeddings.openai import OpenAIEmbeddings as _OpenAIEmbeddings
-        EMBEDDINGS_CLASS = _OpenAIEmbeddings
+        mod = importlib.import_module(_mod)
+        EMBEDDINGS_CLASS = getattr(mod, "OpenAIEmbeddings")
+        break
     except Exception:
         EMBEDDINGS_CLASS = None
 
@@ -72,8 +78,9 @@ except Exception:
 SENTENCE_TRANSFORMER = None
 if EMBEDDINGS_CLASS is None:
     try:
-        from sentence_transformers import SentenceTransformer
-        SENTENCE_TRANSFORMER = SentenceTransformer
+        # Use importlib to avoid static-analysis unresolved-import errors when sentence-transformers is not installed
+        mod = importlib.import_module("sentence_transformers")
+        SENTENCE_TRANSFORMER = getattr(mod, "SentenceTransformer", None)
     except Exception:
         SENTENCE_TRANSFORMER = None
 
@@ -88,7 +95,7 @@ os.makedirs(DEFAULT_PERSIST_DIR, exist_ok=True)
 # ---------------------------
 # Helpers
 # ---------------------------
-def documents_from_articles(articles: List[Dict]) -> List[Document]:
+def documents_from_articles(articles: List[Dict]) -> List[Any]:
     """
     Convert list-of-article-dicts to LangChain Document objects.
     Each article dict should have keys like 'title','content','description','publishedAt','source','url','category'
