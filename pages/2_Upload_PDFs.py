@@ -54,6 +54,23 @@ uploaded_file = st.file_uploader("Upload Newspaper PDF", type=["pdf"])
 
 if uploaded_file:
     bytes_data = uploaded_file.read()
+    file_size_mb = len(bytes_data) / (1024 * 1024)
+    
+    # Show file info
+    st.info(f"📄 File: {uploaded_file.name} ({file_size_mb:.2f} MB)")
+    
+    # Warn about large files on free tier
+    if file_size_mb > 5:
+        st.warning("""
+        ⚠️ **Large File Detected**
+        
+        Your PDF is quite large. On Render's free tier (512MB RAM), this might fail.
+        
+        **Recommendations:**
+        - Disable OCR if the PDF has selectable text
+        - Try uploading only a few pages
+        - Consider upgrading to Render Starter plan for 2GB RAM
+        """)
     
     if st.button("🔎 Analyze & Generate Cards", type="primary"):
         with st.spinner("🧠 AI Analysis in progress... This may take 1-2 minutes"):

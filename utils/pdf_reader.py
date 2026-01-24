@@ -16,57 +16,26 @@ import warnings
 logger = logging.getLogger(__name__)
 
 try:
-    import importlib
-    fitz = importlib.import_module("fitz")  # PyMuPDF
+    import fitz  # PyMuPDF
     HAS_FITZ = True
-except Exception:
-    # fitz (PyMuPDF) is optional; set flag and leave fitz as None
-    fitz = None
+except ImportError:
     HAS_FITZ = False
 
-# Import PyPDF2 (or pypdf) dynamically to avoid static import resolution errors
 try:
-    import importlib
-    pypdf_mod = None
-    PdfReader = None
-    try:
-        pypdf_mod = importlib.import_module("PyPDF2")
-    except Exception:
-        try:
-            # newer distributions may provide the package as "pypdf"
-            pypdf_mod = importlib.import_module("pypdf")
-        except Exception:
-            pypdf_mod = None
-
-    if pypdf_mod is not None:
-        # Prefer PdfReader; fall back to legacy name if present
-        PdfReader = getattr(pypdf_mod, "PdfReader", None) or getattr(pypdf_mod, "PdfFileReader", None)
-        HAS_PYPDF2 = PdfReader is not None
-    else:
-        HAS_PYPDF2 = False
-except Exception:
+    from PyPDF2 import PdfReader
+    HAS_PYPDF2 = True
+except ImportError:
     HAS_PYPDF2 = False
 
-# Dynamically import OCR-related libraries to avoid static import resolution errors
-convert_from_bytes = None
-pytesseract = None
-Image = None
 try:
-    import importlib
-    # pdf2image: convert PDF pages to images
-    pdf2image_mod = importlib.import_module("pdf2image")
-    convert_from_bytes = getattr(pdf2image_mod, "convert_from_bytes", None)
-    # pytesseract: OCR engine
-    pytesseract = importlib.import_module("pytesseract")
-    # PIL Image module
-    Image = importlib.import_module("PIL.Image")
-    # Increase the decompression bomb limit for large PDFs if available
-    try:
-        Image.MAX_IMAGE_PIXELS = None  # Disable limit entirely
-    except Exception:
-        pass
-    HAS_OCR = convert_from_bytes is not None and pytesseract is not None and Image is not None
-except Exception:
+    from pdf2image import convert_from_bytes
+    import pytesseract
+    from PIL import Image
+    # Increase the decompression bomb limit for large PDFs
+    Image.MAX_IMAGE_PIXELS = None  # Disable limit entirely
+    # Or set a higher limit: Image.MAX_IMAGE_PIXELS = 200000000
+    HAS_OCR = True
+except ImportError:
     HAS_OCR = False
 
 
@@ -160,20 +129,60 @@ def extract_with_pypdf2(pdf_bytes: bytes) -> str:
     return "\n".join(texts)
 
 
-def extract_with_ocr(pdf_bytes: bytes, dpi: int = 200) -> str:
+def extract_with_ocr(pdf_bytes: bytes, dpi: int = 150) -> str:
     """OCR fallback: Convert PDF pages to images and run Tesseract OCR."""
     if not HAS_OCR:
         raise RuntimeError("OCR dependencies not installed (pdf2image, pytesseract, Pillow)")
-    pages = convert_from_bytes(pdf_bytes, dpi=dpi)
+    
+    # MEMORY OPTIMIZATION: Process one page at a time instead of all at once
+    import gc
+    
+    # Get page count first without loading all pages
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        num_pages = len(doc)
+        doc.close()
+    except:
+        num_pages = 10  # fallback estimate
+    
     texts = []
-    for idx, img in enumerate(pages):
+    
+    # Process pages in small batches to reduce memory
+    batch_size = 2  # Process 2 pages at a time
+    for start_page in range(0, min(num_pages, 20), batch_size):  # Limit to 20 pages max
         try:
-            text = pytesseract.image_to_string(img, lang="eng")
-            text = _normalize_text(text)
-            if len(text) > 100:  # ignore junk or blank OCR
-                texts.append(text)
+            # Convert only current batch
+            pages = convert_from_bytes(
+                pdf_bytes, 
+                dpi=dpi,
+                first_page=start_page + 1,
+                last_page=min(start_page + batch_size, num_pages)
+            )
+            
+            for idx, img in enumerate(pages):
+                try:
+                    # Resize image to reduce memory before OCR
+                    max_size = (1600, 1600)  # Limit image size
+                    img.thumbnail(max_size, Image.Resampling.LANCZOS)
+                    
+                    text = pytesseract.image_to_string(img, lang="eng")
+                    text = _normalize_text(text)
+                    if len(text) > 100:
+                        texts.append(text)
+                    
+                    # Clear image from memory
+                    del img
+                except Exception as e:
+                    logger.warning(f"OCR failed on page {start_page + idx}: {e}")
+            
+            # Clear batch from memory
+            del pages
+            gc.collect()
+            
         except Exception as e:
-            logger.warning(f"OCR failed on page {idx}: {e}")
+            logger.warning(f"Failed to process batch starting at page {start_page}: {e}")
+            continue
+    
     return "\n".join(texts)
 
 
@@ -260,18 +269,8 @@ def extract_pdf_text_bytes(pdf_bytes, enable_ocr: bool = True):
             # Suppress PIL decompression bomb warnings for large PDFs
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
-                pages = convert_from_bytes(pdf_bytes, dpi=200)
-                num_pages = len(pages)
-                texts = []
-                for idx, img in enumerate(pages):
-                    try:
-                        ocr_text = pytesseract.image_to_string(img, lang="eng")
-                        ocr_text = _normalize_text(ocr_text)
-                        if len(ocr_text) > 100:
-                            texts.append(ocr_text)
-                    except Exception as e:
-                        logger.warning(f"OCR failed on page {idx}: {e}")
-                text = "\n".join(texts)
+                # Use lower DPI (150 instead of 200) to reduce memory
+                text = extract_with_ocr(pdf_bytes, dpi=150)
                 method = "ocr"
         except Exception as e:
             logger.error(f"OCR failed: {e}")
@@ -340,7 +339,22 @@ def split_into_sections(raw_text: str, min_chars: int = 100) -> List[Dict[str, A
     return sections
 
 
-def summarize_sections_groq(sections, mode: str = "deep"):
+# ---------- Backward compatibility aliases ----------
+
+def extract_text_from_pdf(pdf_source, enable_ocr: bool = True) -> str:
+    """
+    Backward compatibility wrapper for extract_pdf_text_bytes.
+    Returns only the text (not num_pages or method).
+    
+    Args:
+        pdf_source: PDF as bytes, file path, or file-like object
+        enable_ocr: Whether to use OCR fallback
+        
+    Returns:
+        Extracted text as string
+    """
+    text, num_pages, method = extract_pdf_text_bytes(pdf_source, enable_ocr=enable_ocr)
+    return text
     """
     Dummy summarizer (replace with LLM call later).
     Handles both list of dicts and single dict inputs.

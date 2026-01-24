@@ -3,10 +3,12 @@ Analyzer wrapper - Uses REAL AI analysis
 - Orchestrates PDF extraction → AI analysis → structured UPSC notes
 - Produces same clean output as news ingestion
 - Compatible with pdf_reader.py and pdf_analyzer.py
+- Memory optimized for cloud deployment
 """
 
 from typing import Dict, Any, List
 import logging
+import gc
 from datetime import datetime
 
 from utils.pdf_reader import extract_pdf_text_bytes
@@ -63,13 +65,25 @@ def analyze_pdf_and_build_notes(
 
         # 2. Use REAL AI analysis (from pdf_analyzer.py)
         logger.info("🧠 Running AI analysis...")
+        
+        # MEMORY OPTIMIZATION: Limit text size for analysis
+        max_text_length = 100000  # ~100KB text limit for free tier
+        if len(raw_text) > max_text_length:
+            logger.warning(f"Text too long ({len(raw_text)} chars), truncating to {max_text_length}")
+            raw_text = raw_text[:max_text_length]
+        
         grouped_items, raw_responses = analyze_pdf_text(
             full_text=raw_text,
             language="Both",  # Support both English and Hindi
-            chunk_size=6000,
-            overlap=300,
+            chunk_size=4000,  # Smaller chunks for memory
+            overlap=200,
             debug=False
         )
+        
+        # Clear memory after analysis
+        del raw_text
+        del raw_responses
+        gc.collect()
 
         logger.info(f"✅ AI analysis complete. Generated items for {len([k for k,v in grouped_items.items() if v])} categories")
 
